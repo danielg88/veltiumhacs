@@ -1,0 +1,12 @@
+{
+    "domain": "veltium",
+    "name": "Veltium EV Charger",
+    "codeowners": [],
+    "config_flow": true,
+    "documentation": "https://github.com/",
+    "iot_class": "cloud_polling",
+    "issue_tracker": "https://github.com/",
+    "requirements": [],
+    "version": "1.0.0"
+}
+
