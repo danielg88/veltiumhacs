@@ -32,8 +32,8 @@ def get_db_instance(hass: HomeAssistant):
     {
         vol.Required("type"): f"{DOMAIN}/ws/consumptions",
         vol.Required("device_id"): str,
-        vol.Optional("aggr", default="day"): vol.Union(
-            "day", "hour", "week", "month", "year"
+        vol.Optional("aggr", default="day"): vol.In(
+            ["day", "hour", "week", "month", "year"]
         ),
         vol.Optional("records", default=30): int,
     }

@@ -4,7 +4,7 @@ import asyncio
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
-from homeassistant.components.recorder.statistics import async_import_statistics, get_last_statistics, StatisticData, StatisticMetaData
+
 import homeassistant.util.dt as dt_util
 from .const import DOMAIN, CONF_EMAIL, CONF_PASSWORD, CONF_API_KEY
 from .coordinator import VeltiumDataUpdateCoordinator, decode_act_to_wh
@@ -35,6 +35,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 async def _async_backfill_historical_data(hass: HomeAssistant, coordinator: VeltiumDataUpdateCoordinator):
     """Elegantly inject past charge sessions into HA Long-Term Statistics."""
+    from homeassistant.components.recorder.statistics import async_import_statistics, get_last_statistics, StatisticData, StatisticMetaData
     device_id = coordinator.data["device_id"]
     records = coordinator.data["records"]
     
