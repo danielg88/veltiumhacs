@@ -1,0 +1,69 @@
+name: Release on Push
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Fetch all history for commit messages
+
+      - name: Get Version from manifest.json
+        id: get_version
+        run: |
+          VERSION=$(jq -r '.version' custom_components/veltium/manifest.json)
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "Read version: $VERSION"
+
+      - name: Get Last Commit Message
+        id: get_commit
+        run: |
+          # Get the title of the last commit (first line)
+          COMMIT_TITLE=$(git log -1 --pretty=format:%s)
+          # Get the full body of the last commit (skipping the title)
+          COMMIT_BODY=$(git log -1 --pretty=format:%b)
+          
+          # We use environment files to safely pass multiline strings in GHA
+          echo "COMMIT_TITLE<<EOF" >> $GITHUB_ENV
+          echo "$COMMIT_TITLE" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+          
+          echo "COMMIT_BODY<<EOF" >> $GITHUB_ENV
+          echo "$COMMIT_BODY" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+
+      - name: Check if Release Already Exists
+        id: check_release
+        run: |
+          if gh release view "${{ env.VERSION }}" > /dev/null 2>&1; then
+            echo "Release ${{ env.VERSION }} already exists. Skipping."
+            echo "SKIP_RELEASE=true" >> $GITHUB_ENV
+          else
+            echo "SKIP_RELEASE=false" >> $GITHUB_ENV
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create GitHub Release
+        if: env.SKIP_RELEASE == 'false'
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ env.VERSION }}
+          release_name: "${{ env.VERSION }}: ${{ env.COMMIT_TITLE }}"
+          body: |
+            ${{ env.COMMIT_TITLE }}
+            
+            ${{ env.COMMIT_BODY }}
+          draft: false
+          prerelease: false
