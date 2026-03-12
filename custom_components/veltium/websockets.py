@@ -1,7 +1,6 @@
 """Websockets related definitions for Veltium EV Charger."""
 import logging
-from datetime import datetime
-from dateutil.relativedelta import relativedelta
+from datetime import datetime, timedelta
 from collections import defaultdict
 
 import voluptuous as vol
@@ -82,7 +81,7 @@ async def ws_get_consumptions(hass: HomeAssistant, connection, msg):
         elif aggr == "day":
             key = local_dt.replace(hour=0, minute=0, second=0, microsecond=0)
         elif aggr == "week":
-            key = (local_dt - relativedelta(days=local_dt.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
+            key = (local_dt - timedelta(days=local_dt.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
         elif aggr == "month":
             key = local_dt.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
         elif aggr == "year":

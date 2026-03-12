@@ -1,5 +1,5 @@
 {
     "name": "Veltium EV Charger",
     "render_readme": true,
-    "hacs": "1.0.1"
+    "hacs": "1.0.2"
 }
