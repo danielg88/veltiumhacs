@@ -3,8 +3,8 @@ import logging
 from collections import defaultdict
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import Platform
-from homeassistant.core import HomeAssistant
+from homeassistant.const import Platform, EVENT_HOMEASSISTANT_START
+from homeassistant.core import HomeAssistant, CoreState, callback
 import homeassistant.util.dt as dt_util
 
 from .const import DOMAIN, CONF_EMAIL, CONF_PASSWORD, CONF_API_KEY
@@ -25,14 +25,23 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = coordinator
 
-    # Set up sensor entities first so they exist in the registry
+    # Set up sensor entities
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     # Register websocket commands
     async_register_websockets(hass)
 
-    # Run the backfill task AFTER entities are set up (avoids race condition)
-    hass.async_create_task(_async_backfill_historical_data(hass, coordinator))
+    # Schedule backfill AFTER Home Assistant is fully started (like edata).
+    # This ensures the recorder is fully running and processing jobs.
+    @callback
+    def _schedule_backfill(*_args):
+        """Schedule the backfill task once HA is fully started."""
+        hass.async_create_task(_async_backfill_historical_data(hass, coordinator))
+
+    if hass.state == CoreState.running:
+        _schedule_backfill()
+    else:
+        hass.bus.async_listen_once(EVENT_HOMEASSISTANT_START, _schedule_backfill)
 
     return True
 
@@ -57,9 +66,10 @@ async def _async_backfill_historical_data(hass: HomeAssistant, coordinator: Velt
 
         device_id = coordinator.data["device_id"]
         records = coordinator.data["records"]
+        _LOGGER.info("Veltium backfill: device_id=%s, records=%d", device_id, len(records) if records else 0)
 
         if not records:
-            _LOGGER.debug("No records available for backfill.")
+            _LOGGER.info("Veltium backfill: no records available, skipping.")
             return
 
         # External statistics format: "domain:name" (same pattern as edata)
@@ -83,17 +93,24 @@ async def _async_backfill_historical_data(hass: HomeAssistant, coordinator: Velt
 
         db = _get_db_instance()
 
-        # Check if we already have statistics — pass correct types set
-        last_stats = await db.async_add_executor_job(
-            get_last_statistics, hass, 1, statistic_id, True, {"sum", "state"}
-        )
-
-        last_stat = None
-        if statistic_id in last_stats and last_stats[statistic_id]:
-            last_stat = last_stats[statistic_id][0]
-
-        last_timestamp = last_stat["start"] if last_stat else 0
-        running_sum = last_stat.get("sum", 0.0) if last_stat else 0.0
+        # Check for existing statistics — resilient to API signature changes
+        last_timestamp = 0
+        running_sum = 0.0
+        try:
+            last_stats = await db.async_add_executor_job(
+                get_last_statistics, hass, 1, statistic_id, True, {"sum", "state"}
+            )
+            if statistic_id in last_stats and last_stats[statistic_id]:
+                last_stat = last_stats[statistic_id][0]
+                last_timestamp = last_stat.get("start", 0)
+                running_sum = last_stat.get("sum", 0.0)
+                _LOGGER.info("Veltium backfill: resuming from last_timestamp=%s, running_sum=%s", last_timestamp, running_sum)
+            else:
+                _LOGGER.info("Veltium backfill: no existing statistics found, starting fresh.")
+        except Exception:
+            _LOGGER.warning("Veltium backfill: get_last_statistics failed (API signature change?), starting fresh.")
+            last_timestamp = 0
+            running_sum = 0.0
 
         # Filter records that are newer than our last recorded statistic
         new_records = []
@@ -107,11 +124,10 @@ async def _async_backfill_historical_data(hass: HomeAssistant, coordinator: Velt
                     new_records.append(record)
 
         if not new_records:
-            _LOGGER.debug(
-                "No new historical sessions to inject into LTS for Veltium (last at %s).",
-                last_timestamp,
-            )
+            _LOGGER.info("Veltium backfill: no new records to inject (last at %s).", last_timestamp)
             return
+
+        _LOGGER.info("Veltium backfill: %d new records to process.", len(new_records))
 
         # Sort records chronologically
         new_records.sort(key=lambda x: x.get("dis", 0))
@@ -126,7 +142,6 @@ async def _async_backfill_historical_data(hass: HomeAssistant, coordinator: Velt
             hourly_buckets[dt_hour.timestamp()] += kwh
 
         # Build statistics: state = per-hour consumption, sum = cumulative total
-        # (This matches the edata pattern exactly)
         statistics = []
         for hour_ts in sorted(hourly_buckets.keys()):
             hour_kwh = hourly_buckets[hour_ts]
@@ -142,13 +157,13 @@ async def _async_backfill_historical_data(hass: HomeAssistant, coordinator: Velt
 
         if statistics:
             _LOGGER.info(
-                "Injecting %d hourly statistics into LTS for Veltium (statistic_id=%s).",
+                "Veltium backfill: injecting %d hourly statistics (statistic_id=%s, final_sum=%.3f kWh).",
                 len(statistics),
                 statistic_id,
+                running_sum,
             )
             async_add_external_statistics(hass, metadata, statistics)
+            _LOGGER.info("Veltium backfill: async_add_external_statistics called successfully.")
 
     except Exception:
-        _LOGGER.exception("Failed to backfill historical energy data for Veltium.")
-
-
+        _LOGGER.exception("Veltium backfill: FAILED to backfill historical energy data.")
