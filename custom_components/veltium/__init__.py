@@ -45,14 +45,16 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 async def _async_backfill_historical_data(hass: HomeAssistant, coordinator: VeltiumDataUpdateCoordinator):
-    """Inject past charge sessions into HA Long-Term Statistics as external statistics."""
+    """Inject past charge sessions into HA Long-Term Statistics (recorder-based)."""
     try:
+        from homeassistant.components.recorder import get_instance
         from homeassistant.components.recorder.statistics import (
-            async_add_external_statistics,
+            async_import_statistics,
             get_last_statistics,
             StatisticData,
             StatisticMetaData,
         )
+        from homeassistant.helpers import entity_registry as er
 
         device_id = coordinator.data["device_id"]
         records = coordinator.data["records"]
@@ -61,20 +63,35 @@ async def _async_backfill_historical_data(hass: HomeAssistant, coordinator: Velt
             _LOGGER.debug("No records available for backfill.")
             return
 
-        # Use external statistics format: "domain:name"
-        statistic_id = f"{DOMAIN}:{device_id}_total_energy"
+        # Wait for the recorder to be fully started
+        instance = get_instance(hass)
+        await instance.async_db_ready
+
+        # Look up the actual entity_id from the registry
+        registry = er.async_get(hass)
+        unique_id = f"{device_id}_total_energy"
+        entity_id = registry.async_get_entity_id(Platform.SENSOR, DOMAIN, unique_id)
+
+        if not entity_id:
+            _LOGGER.warning(
+                "Entity for unique_id '%s' not found in registry, cannot backfill.", unique_id
+            )
+            return
+
+        # Use recorder source with the entity's statistic_id
+        statistic_id = entity_id
 
         metadata = StatisticMetaData(
             has_mean=False,
             has_sum=True,
             name="Veltium Total Energy",
-            source=DOMAIN,
+            source="recorder",
             statistic_id=statistic_id,
             unit_of_measurement="kWh",
         )
 
         # Check if we already have statistics — pass correct types set
-        last_stats = await hass.async_add_executor_job(
+        last_stats = await instance.async_add_executor_job(
             get_last_statistics, hass, 1, statistic_id, True, {"sum", "state"}
         )
 
@@ -130,10 +147,12 @@ async def _async_backfill_historical_data(hass: HomeAssistant, coordinator: Velt
 
         if statistics:
             _LOGGER.info(
-                "Injecting %d hourly statistics into LTS for Veltium.",
+                "Injecting %d hourly statistics into LTS for Veltium (statistic_id=%s).",
                 len(statistics),
+                statistic_id,
             )
-            async_add_external_statistics(hass, metadata, statistics)
+            async_import_statistics(hass, metadata, statistics)
 
     except Exception:
         _LOGGER.exception("Failed to backfill historical energy data for Veltium.")
+
