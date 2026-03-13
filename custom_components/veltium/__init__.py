@@ -1,5 +1,6 @@
 """Veltium EV Charger Integration."""
 import logging
+import re
 from collections import defaultdict
 
 from homeassistant.config_entries import ConfigEntry
@@ -73,7 +74,10 @@ async def _async_backfill_historical_data(hass: HomeAssistant, coordinator: Velt
             return
 
         # External statistics format: "domain:name" (same pattern as edata)
-        statistic_id = f"{DOMAIN}:{device_id}_total_energy"
+        # Sanitize device_id: HA only allows lowercase alphanumeric + underscores in statistic_ids
+        safe_id = re.sub(r"[^a-z0-9_]", "_", device_id.lower()).strip("_")
+        statistic_id = f"{DOMAIN}:{safe_id}_total_energy"
+        _LOGGER.info("Veltium backfill: statistic_id=%s (raw device_id=%s)", statistic_id, device_id)
 
         metadata = StatisticMetaData(
             has_mean=False,
