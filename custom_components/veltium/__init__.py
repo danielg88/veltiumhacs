@@ -45,16 +45,15 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 async def _async_backfill_historical_data(hass: HomeAssistant, coordinator: VeltiumDataUpdateCoordinator):
-    """Inject past charge sessions into HA Long-Term Statistics (recorder-based)."""
+    """Inject past charge sessions into HA Long-Term Statistics (external statistics)."""
     try:
-        from homeassistant.components.recorder import get_instance
+        import homeassistant.components.recorder.util as recorder_util
         from homeassistant.components.recorder.statistics import (
-            async_import_statistics,
+            async_add_external_statistics,
             get_last_statistics,
             StatisticData,
             StatisticMetaData,
         )
-        from homeassistant.helpers import entity_registry as er
 
         device_id = coordinator.data["device_id"]
         records = coordinator.data["records"]
@@ -63,35 +62,29 @@ async def _async_backfill_historical_data(hass: HomeAssistant, coordinator: Velt
             _LOGGER.debug("No records available for backfill.")
             return
 
-        # Wait for the recorder to be fully started
-        instance = get_instance(hass)
-        await instance.async_db_ready
-
-        # Look up the actual entity_id from the registry
-        registry = er.async_get(hass)
-        unique_id = f"{device_id}_total_energy"
-        entity_id = registry.async_get_entity_id(Platform.SENSOR, DOMAIN, unique_id)
-
-        if not entity_id:
-            _LOGGER.warning(
-                "Entity for unique_id '%s' not found in registry, cannot backfill.", unique_id
-            )
-            return
-
-        # Use recorder source with the entity's statistic_id
-        statistic_id = entity_id
+        # External statistics format: "domain:name" (same pattern as edata)
+        statistic_id = f"{DOMAIN}:{device_id}_total_energy"
 
         metadata = StatisticMetaData(
             has_mean=False,
             has_sum=True,
             name="Veltium Total Energy",
-            source="recorder",
+            source=DOMAIN,
             statistic_id=statistic_id,
             unit_of_measurement="kWh",
         )
 
+        # Get the recorder instance (edata-compatible helper)
+        def _get_db_instance():
+            try:
+                return recorder_util.get_instance(hass)
+            except AttributeError:
+                return hass
+
+        db = _get_db_instance()
+
         # Check if we already have statistics — pass correct types set
-        last_stats = await instance.async_add_executor_job(
+        last_stats = await db.async_add_executor_job(
             get_last_statistics, hass, 1, statistic_id, True, {"sum", "state"}
         )
 
@@ -132,15 +125,17 @@ async def _async_backfill_historical_data(hass: HomeAssistant, coordinator: Velt
             dt_hour = dt.replace(minute=0, second=0, microsecond=0)
             hourly_buckets[dt_hour.timestamp()] += kwh
 
-        # Build statistics list — one entry per unique hour
+        # Build statistics: state = per-hour consumption, sum = cumulative total
+        # (This matches the edata pattern exactly)
         statistics = []
         for hour_ts in sorted(hourly_buckets.keys()):
-            running_sum += hourly_buckets[hour_ts]
+            hour_kwh = hourly_buckets[hour_ts]
+            running_sum += hour_kwh
             dt_hour = dt_util.utc_from_timestamp(hour_ts)
             statistics.append(
                 StatisticData(
                     start=dt_hour,
-                    state=running_sum,
+                    state=hour_kwh,
                     sum=running_sum,
                 )
             )
@@ -151,8 +146,9 @@ async def _async_backfill_historical_data(hass: HomeAssistant, coordinator: Velt
                 len(statistics),
                 statistic_id,
             )
-            async_import_statistics(hass, metadata, statistics)
+            async_add_external_statistics(hass, metadata, statistics)
 
     except Exception:
         _LOGGER.exception("Failed to backfill historical energy data for Veltium.")
+
 
